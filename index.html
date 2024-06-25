@@ -1,0 +1,1967 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minimalistic RTS Game</title>
+    <style>
+       body {
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+        #gameContainer {
+            position: relative;
+        }
+        #gameInstructions {
+            width: 300px;
+            margin-left: 20px;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h2 {
+            color: #333;
+            border-bottom: 2px solid #333;
+            padding-bottom: 10px;
+        }
+        ul {
+            padding-left: 20px;
+        }
+        li {
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+  <div id="gameContainer">
+    <canvas id="gameCanvas"></canvas>
+</div>
+<div id="gameInstructions">
+    <h2>Game Instructions</h2>
+    <ol>
+        <li><strong>Goal:</strong> Destroy all enemy Town Centers to win.</li>
+        <li><strong>Resources:</strong> Collect gold, food, and wood. Use workers to gather these.</li>
+        <li><strong>Buildings:</strong>
+            <ul>
+                <li>Town Center: Produces workers and scouts</li>
+                <li>Barracks: Produces soldiers</li>
+                <li>Farm: Generates food over time</li>
+            </ul>
+        </li>
+        <li><strong>Units:</strong>
+            <ul>
+                <li>Worker: Gathers resources and builds</li>
+                <li>Scout: Fast unit with long-range attack</li>
+                <li>Soldier: Strong combat unit</li>
+            </ul>
+        </li>
+        <li><strong>Controls:</strong>
+            <ul>
+                <li>Left-click: Select unit or building</li>
+                <li>Left-click and drag: Select multiple units</li>
+                <li>Right-click: Move units or assign workers</li>
+                <li>E: Organize selected units in a grid</li>
+            </ul>
+        </li>
+        <li><strong>Building:</strong> Select a worker and press:
+            <ul>
+                <li>T: Build Town Center</li>
+                <li>B: Build Barracks</li>
+                <li>F: Build Farm</li>
+            </ul>
+        </li>
+        <li><strong>Camera:</strong> Use arrow keys or WASD to move</li>
+        <li><strong>Training:</strong> Select appropriate building to train units</li>
+    </ol>
+</div>
+    <script>
+    
+    // Constants
+    const CANVAS_WIDTH = 800;
+    const CANVAS_HEIGHT = 700;
+    const MINIMAP_SIZE = 150;
+    const UI_HEIGHT = 180;
+    const TOTAL_HEIGHT = CANVAS_HEIGHT + UI_HEIGHT;
+
+
+    const MAP_SIZE = 4000;
+    const PLAYER_COLORS = ['#3498db', '#e74c3c'];
+    const RESOURCE_TYPES = ['coin', 'food', 'wood'];
+    const STARTING_RESOURCES = { coin: 50, food: 80, wood: 50 };
+    const STARTING_WORKERS = 3;
+    const CAMERA_SPEED = 10;
+    const UNIT_SPEED = 2;
+
+    const PLAYER_WORKER_COST = { food: 50 };
+    const PLAYER_SOLDIER_COST = { food: 100 };
+    const PLAYER_SCOUT_COST = { food: 80, coin: 20 };
+    
+    const FARM_COST = { wood: 100, coin: 100, food: 100 };
+    const FARM_FOOD_PRODUCTION_AMOUNT = 10;
+    const FARM_FOOD_PRODUCTION_INTERVAL = 100; // in game ticks/frames
+
+    const TOWN_CENTER_COST = { wood: 400 };
+    const BARRACKS_COST = { wood: 150 };
+
+
+    ////////// AI parameters:
+
+    const AI_WORKER_COST = 50; // Cheaper than player workers
+    const AI_SOLDIER_COST = 100; // Cheaper than player soldiers
+    // Add AI scout cost
+    const AI_SCOUT_COST = { food: 80, coin: 20 }; // Assuming same as player for now
+
+    const MAX_WORKERS = 20;
+    const AI_TOWN_CENTER_COST = { wood: 400 };
+    const MIN_DISTANCE_BETWEEN_TOWN_CENTERS = 300;
+    const MAX_TOWN_CENTERS = 3;
+    const AI_BARRACKS_COST = { wood: 150 };
+    const MAX_BARRACKS = 10;
+    const AI_MAX_SOLDIERS = 50;
+    const MAX_BARRACKS_PER_TOWN_CENTER = 3;
+    const DESIRED_RATIO_SOLDIERS_TO_WORKERS = 0.5;
+    const BUILDING_MARGIN = 50; // New constant for building margin
+    const MAX_TOWN_CENTER_DISTANCE = 1000; // Maximum distance from existing buildings
+    
+    const DESIRED_WORKER_COUNT = 10; // Adjust based on your game balance
+    const FOOD_RESERVE = 200; // Minimum food to keep in reserve
+
+    const AI_WORKER_THRESHOLD_FOR_FARMS = 8; // AI starts building farms when it has this many workers
+    const AI_MAX_FARMS = 5; // Maximum number of farms the AI will build
+    const AI_FARM_BUILD_INTERVAL = 500; // Minimum frames between farm constructions
+
+    const AI_BATTALION_SIZE = 10;
+    const AI_DEFENSIVE_DISTANCE = 400; 
+
+    //////////
+
+
+
+    const RESOURCE_COLORS = {
+      'coin': '#FFD700',  // Gold
+      'food': '#32CD32',  // LimeGreen
+      'wood': '#8B4513'   // SaddleBrown
+    };
+
+    // Game state
+    let canvas, ctx, minimapCanvas, minimapCtx;
+    let gameState = {
+      players: [],
+      resources: [],
+      terrain: [],
+      selectedUnits: [],
+      cameraX: 0,
+      cameraY: 0,
+      keys: {},
+      dragStart: null,
+      dragEnd: null
+    };
+
+    gameState.minimap = {
+      isDragging: false,
+      lastX: 0,
+      lastY: 0
+    };
+
+    gameState.attackEffects = [];
+
+    gameState.frameCount = 0;
+
+    gameState.ai = {
+      lastFarmBuildTime: 0
+    };
+
+   // Classes
+   class Player {
+      constructor(id, isAI = false) {
+        this.id = id;
+        this.isAI = isAI;
+        this.color = PLAYER_COLORS[id];
+        this.resources = { ...STARTING_RESOURCES };
+        this.units = [];
+        this.buildings = [];
+      }
+    }
+
+    class Unit {
+      constructor(x, y, type, playerId) {
+        this.x = x;
+        this.y = y;
+        this.type = type;
+        this.playerId = playerId;
+        this.health = 100;
+        this.maxHealth = 100;
+        this.attackRange = 50;
+        this.attackDamage = 10;
+        this.speed = UNIT_SPEED;
+        this.targetX = null;
+        this.targetY = null;
+      }
+
+      update() {
+        if (this.targetX !== null && this.targetY !== null) {
+          const dx = this.targetX - this.x;
+          const dy = this.targetY - this.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          
+          if (distance > this.speed) {
+            this.x += (dx / distance) * this.speed;
+            this.y += (dy / distance) * this.speed;
+          } else {
+            this.x = this.targetX;
+            this.y = this.targetY;
+            this.targetX = null;
+            this.targetY = null;
+          }
+        }
+      }
+
+      
+      draw(ctx) {
+
+        // Draw health bar
+        const healthPercentage = this.health / this.maxHealth ;
+        ctx.fillStyle = 'red';
+        ctx.fillRect(this.x - 10, this.y - 15, 20, 3);
+        ctx.fillStyle = 'green';
+        ctx.fillRect(this.x - 10, this.y - 15, 20 * healthPercentage, 3);
+      }
+
+      moveTo(x, y) {
+        this.targetX = x;
+        this.targetY = y;
+      }
+    }
+
+    class Worker extends Unit {
+          constructor(x, y, playerId) {
+            super(x, y, 'worker', playerId);
+            this.carryingResource = null;
+            this.targetResource = null;
+            this.capacity = 10;
+            this.collectionSpeed = 1;
+            this.state = 'idle';
+            this.buildingTarget = null;
+          }
+
+
+          buildTownCenter(x, y) {
+            this.dropResource(); // Always drop resource when reassigned
+            this.targetResource = null;
+            this.state = 'building';
+            this.targetX = x;
+            this.targetY = y;
+            this.buildingTarget = { x, y, type: 'townCenter' };
+          }
+
+          buildBarracks(x, y) {
+            this.dropResource();
+            this.targetResource = null;
+            this.state = 'building';
+            this.targetX = x;
+            this.targetY = y;
+            this.buildingTarget = { x, y, type: 'barracks' };
+          }
+
+          buildFarm(x, y) {
+            this.dropResource();
+            this.targetResource = null;
+            this.state = 'building';
+            this.targetX = x;
+            this.targetY = y;
+            this.buildingTarget = { x, y, type: 'farm' };
+          }
+
+
+
+        // Method for player-initiated moves
+        moveToPosition(x, y) {
+            if (this.carryingResource) {
+              this.dropResource();
+            }
+            this.state = 'idle';
+            this.targetResource = null;
+            super.moveTo(x, y);
+          }
+
+          // Method for internal state-driven moves
+          moveToTarget(x, y) {
+            super.moveTo(x, y);
+          }
+
+          dropResource() {
+            if (this.carryingResource) {
+              // Create a new resource at the worker's current position
+              gameState.resources.push(new Resource(this.x, this.y, this.carryingResource.type, this.carryingResource.amount));
+              this.carryingResource = null;
+            }
+          }
+
+          assignResource(resource) {
+            this.dropResource(); // Always drop resource when reassigned
+            this.targetResource = resource;
+            this.state = 'movingToResource';
+            this.moveToTarget(resource.x, resource.y);
+          }
+
+          update() {
+            super.update();
+            
+            switch (this.state) {
+              case 'idle':
+                break;
+              case 'movingToResource':
+                if (this.hasReachedTarget() && this.targetResource) {
+                  this.state = 'collecting';
+                }
+                break;
+              case 'collecting':
+                this.collectResource();
+                break;
+              case 'movingToBase':
+                if (this.hasReachedTarget()) {
+                  this.state = 'depositing';
+                }
+                break;
+              case 'depositing':
+                this.depositResource();
+                break;
+                case 'building':
+                  if (Math.abs(this.x - this.targetX) < 5 && Math.abs(this.y - this.targetY) < 5) {
+                    if (this.buildingTarget) {
+                      const newBuilding = new Building(this.buildingTarget.x, this.buildingTarget.y, this.buildingTarget.type, this.playerId);
+                      gameState.players[this.playerId].buildings.push(newBuilding);
+                      this.buildingTarget = null;
+                      this.state = 'idle';
+                      console.log("AI worker has started construction of a new building");
+                    }
+                  } else {
+                    this.moveTo(this.targetX, this.targetY);
+                  }
+                  break;
+            }
+          }
+
+          collectResource() {
+            if (this.targetResource && this.targetResource.amount > 0) {
+              const amountToCollect = Math.min(this.collectionSpeed, this.capacity - (this.carryingResource?.amount || 0), this.targetResource.amount);
+              if (amountToCollect > 0) {
+                if (!this.carryingResource) {
+                  this.carryingResource = { type: this.targetResource.type, amount: 0 };
+                }
+                this.carryingResource.amount += amountToCollect;
+                this.targetResource.amount -= amountToCollect;
+                
+                if (this.carryingResource.amount >= this.capacity || this.targetResource.amount <= 0) {
+                  const townCenter = this.findNearestCompleteTownCenter();
+                  if (townCenter) {
+                    this.state = 'movingToBase';
+                    this.moveToTarget(townCenter.x, townCenter.y);
+                  } else {
+                    this.state = 'idle';
+                  }
+                }
+              }
+            } else {
+              this.state = 'idle';
+              this.targetResource = null;
+            }
+          }
+
+          depositResource() {
+            if (this.carryingResource) {
+              gameState.players[this.playerId].resources[this.carryingResource.type] += this.carryingResource.amount;
+              this.carryingResource = null;
+              
+              if (this.targetResource && this.targetResource.amount > 0) {
+                this.state = 'movingToResource';
+                this.moveToTarget(this.targetResource.x, this.targetResource.y);
+              } else {
+                this.state = 'idle';
+                this.targetResource = null;
+              }
+            } else {
+              this.state = 'idle';
+            }
+          }
+
+          findNearestCompleteTownCenter() {
+            return gameState.players[this.playerId].buildings
+              .filter(b => b.type === 'townCenter' && b.isComplete)
+              .reduce((nearest, current) => {
+                const distToCurrent = Math.sqrt((this.x - current.x)**2 + (this.y - current.y)**2);
+                const distToNearest = nearest ? Math.sqrt((this.x - nearest.x)**2 + (this.y - nearest.y)**2) : Infinity;
+                return distToCurrent < distToNearest ? current : nearest;
+              }, null);
+          }
+
+          hasReachedTarget() {
+            return this.targetX === null || (Math.abs(this.x - this.targetX) < 5 && Math.abs(this.y - this.targetY) < 5);
+          }
+
+          draw(ctx) {
+            super.draw(ctx);
+
+            // Draw a slightly larger, darker circle behind the unit
+            ctx.fillStyle = this.type === 'worker' ? '#2980b9' : '#c0392b';
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, 7, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Draw the unit
+            ctx.fillStyle = PLAYER_COLORS[this.playerId];
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, 5, 0, Math.PI * 2);
+            ctx.fill();
+
+            if (this.carryingResource) {
+              ctx.fillStyle = this.carryingResource.type === 'coin' ? '#f1c40f' : this.carryingResource.type === 'food' ? '#2ecc71' : '#95a5a6';
+              ctx.beginPath();
+              ctx.arc(this.x, this.y - 5, 3, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+      }
+
+
+      
+
+class Soldier extends Unit {
+  constructor(x, y, playerId) {
+    super(x, y, 'soldier', playerId);
+    this.health = 200;
+    this.maxHealth = 200;
+    this.speed = 1.5;
+
+    this.attackRange = 50;
+    this.attackDamage = 20;
+    this.attackCooldown = 0;
+    this.attackSpeed = 60; // Attack every 60 frames (1 second at 60 FPS)
+  }
+
+  update() {
+    super.update();
+    this.attackNearestEnemy();
+  }
+
+  moveToPosition(x, y) {
+            super.moveTo(x, y);
+          }
+
+  attackNearestEnemy() {
+    if (this.attackCooldown > 0) {
+      this.attackCooldown--;
+      return;
+    }
+
+    const enemies = this.findEnemiesInRange();
+    if (enemies.length > 0) {
+      const target = this.selectTarget(enemies);
+      this.attack(target);
+    }
+  }
+
+  findEnemiesInRange() {
+    return gameState.players
+      .filter(player => player.id !== this.playerId)
+      .flatMap(player => [
+        ...player.units.filter(unit => this.distanceTo(unit) <= this.attackRange),
+        ...player.buildings.filter(building => this.distanceTo(building) <= this.attackRange)
+      ]);
+  }
+
+  selectTarget(enemies) {
+    const soldiers = enemies.filter(e => e instanceof Soldier);
+    const workers = enemies.filter(e => e instanceof Worker);
+    const buildings = enemies.filter(e => e instanceof Building);
+
+    if (soldiers.length > 0) return soldiers[0];
+    if (workers.length > 0) return workers[0];
+    return buildings[0];
+  }
+
+  attack(target) {
+    target.health -= this.attackDamage;
+    this.attackCooldown = this.attackSpeed;
+    console.log(`Soldier ${this.playerId} attacked ${target.constructor.name} ${target.playerId}. Target health: ${target.health}`);
+
+    // Create attack effect
+    gameState.attackEffects.push(new AttackEffect(
+      this.x, 
+      this.y, 
+      target.x + (Math.random() - 0.5) * 10, 
+      target.y + (Math.random() - 0.5) * 10, 
+      this.playerId
+    ));
+  }
+
+  distanceTo(entity) {
+    return Math.sqrt((this.x - entity.x) ** 2 + (this.y - entity.y) ** 2);
+  }
+
+  draw(ctx) {
+    super.draw(ctx);
+
+    // Draw a slightly larger, darker triangle behind the unit
+    ctx.fillStyle = '#c0392b';
+    ctx.beginPath();
+    ctx.moveTo(this.x, this.y - 8);
+    ctx.lineTo(this.x - 7, this.y + 4);
+    ctx.lineTo(this.x + 7, this.y + 4);
+    ctx.closePath();
+    ctx.fill();
+
+    // Draw the unit
+    ctx.fillStyle = PLAYER_COLORS[this.playerId];
+    ctx.beginPath();
+    ctx.moveTo(this.x, this.y - 6);
+    ctx.lineTo(this.x - 5, this.y + 3);
+    ctx.lineTo(this.x + 5, this.y + 3);
+    ctx.closePath();
+    ctx.fill();
+  
+  }
+}
+
+
+class AttackEffect {
+  constructor(startX, startY, endX, endY, playerid) {
+    this.startX = startX;
+    this.startY = startY;
+    this.endX = endX;
+    this.endY = endY;
+    this.duration = 10; // Effect lasts for 10 frames
+    this.currentFrame = 0;
+    this.playerId = playerid;
+  }
+
+  update() {
+    this.currentFrame++;
+    return this.currentFrame < this.duration;
+  }
+
+  draw(ctx) {
+
+    const alpha = 1 - (this.currentFrame / this.duration);
+    if (this.playerId === 0) {
+      ctx.strokeStyle = `rgba(0, 0, 255, ${alpha})`; // Blue color with fading alpha
+    } else {
+      ctx.strokeStyle = `rgba(255, 0, 0, ${alpha})`; // Blue color with fading alpha
+    }
+
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(this.startX, this.startY);
+    ctx.lineTo(this.endX, this.endY);
+    ctx.stroke();
+  }
+}
+
+// Add Scout to the Unit class hierarchy
+class Scout extends Soldier {
+    constructor(x, y, playerId) {
+      super(x, y, playerId);
+      this.type = 'scout';
+      this.health = 100;
+      this.maxHealth = 100;
+      this.attackRange = 50; // Longer range than regular soldiers
+      this.attackDamage = 10; // Less damage than regular soldiers
+      this.attackSpeed = 45; // Faster attack speed (every 45 frames, or 0.75 seconds at 60 FPS)
+      this.speed = UNIT_SPEED * 2; // Double speed compared to other units
+    }
+
+    draw(ctx) {
+      // Draw a slightly larger, darker diamond behind the unit
+      ctx.fillStyle = '#8e44ad'; // Dark purple
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y - 8);
+      ctx.lineTo(this.x + 6, this.y);
+      ctx.lineTo(this.x, this.y + 8);
+      ctx.lineTo(this.x - 6, this.y);
+      ctx.closePath();
+      ctx.fill();
+
+      // Draw the unit
+      ctx.fillStyle = PLAYER_COLORS[this.playerId];
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y - 6);
+      ctx.lineTo(this.x + 4, this.y);
+      ctx.lineTo(this.x, this.y + 6);
+      ctx.lineTo(this.x - 4, this.y);
+      ctx.closePath();
+      ctx.fill();
+
+      // Draw health bar
+      super.draw(ctx);
+    }
+  }
+
+    // Update the Building class
+class Building {
+  constructor(x, y, type, playerId) {
+    this.x = x;
+    this.y = y;
+    this.type = type;
+    this.playerId = playerId;
+
+    this.health = 200;
+    this.maxHealth = 200; // Add this line to store the maximum health
+
+    this.size = type === 'townCenter' ? 50 : 40;
+    this.trainingQueue = [];
+    this.trainingProgress = 0;
+    this.constructionTime = type === 'townCenter' ? 300 : type === 'farm' ? 200 : 200;
+    this.constructionProgress = 0;
+    this.isComplete = false;
+    this.trainingTime = 100;
+    this.foodProductionTimer = 0;
+  }
+
+  update() {
+    if (!this.isComplete) {
+      this.constructionProgress++;
+      if (this.constructionProgress >= this.constructionTime) {
+        this.isComplete = true;
+      }
+      return;
+    }
+
+    if (this.type === 'farm') {
+      this.foodProductionTimer++;
+      if (this.foodProductionTimer >= FARM_FOOD_PRODUCTION_INTERVAL) {
+        gameState.players[this.playerId].resources.food += FARM_FOOD_PRODUCTION_AMOUNT;
+        this.foodProductionTimer = 0;
+      }
+    } else {
+      // Existing logic for other building types
+      if (this.trainingQueue.length > 0) {
+        this.trainingProgress++;
+        if (this.trainingProgress >= this.trainingTime) {
+          const unitType = this.trainingQueue.shift();
+          let newUnit;
+          switch (unitType) {
+            case 'worker':
+              newUnit = new Worker(this.x, this.y, this.playerId);
+              break;
+            case 'soldier':
+              newUnit = new Soldier(this.x, this.y, this.playerId);
+
+              if (gameState.players[this.playerId].isAI) {
+                onAICreateSoldier(gameState.players[this.playerId], newUnit);
+              }
+              break;
+            case 'scout':
+              newUnit = new Scout(this.x, this.y, this.playerId);
+              break;
+          }
+          gameState.players[this.playerId].units.push(newUnit);
+          this.trainingProgress = 0;
+        }
+      }
+    }
+
+    
+  }
+
+  draw(ctx) {
+    const playerColor = PLAYER_COLORS[this.playerId];
+    
+    // Draw building outline
+    ctx.strokeStyle = 'black';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
+
+    if (!this.isComplete) {
+      // Draw construction progress
+      ctx.fillStyle = 'rgba(128, 128, 128, 0.5)';
+      ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
+      
+      const progress = this.constructionProgress / this.constructionTime;
+      ctx.fillStyle = playerColor;
+      ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size * progress);
+      return;
+    }
+
+    // Fill building with player color
+    ctx.fillStyle = playerColor;
+    ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
+
+    // Draw health bar
+    const healthPercentage = this.health / this.maxHealth;
+      const healthBarWidth = this.size;
+      const healthBarHeight = 5;
+      const healthBarY = this.y - this.size / 2 - 10;
+
+      // Draw background (red) health bar
+      ctx.fillStyle = 'red';
+      ctx.fillRect(this.x - healthBarWidth / 2, healthBarY, healthBarWidth, healthBarHeight);
+
+      // Draw foreground (green) health bar
+      ctx.fillStyle = 'green';
+      ctx.fillRect(this.x - healthBarWidth / 2, healthBarY, healthBarWidth * healthPercentage, healthBarHeight);
+
+    // Draw building-specific features
+    if (this.type === 'farm') {
+      this.drawFarmCrops(ctx);
+    }
+
+    // Draw building-specific features
+    if (this.type === 'townCenter') {
+      // Draw a simple flag
+      ctx.beginPath();
+      ctx.moveTo(this.x + this.size / 4, this.y - this.size / 2 + 4);
+      ctx.lineTo(this.x + this.size / 4, this.y - this.size / 2 + 4);
+      ctx.lineTo(this.x + this.size / 4 + 10, this.y - this.size / 2 + 5+ 4);
+      ctx.lineTo(this.x + this.size / 4, this.y - this.size / 2 + 10+ 4);
+      ctx.fillStyle = 'white';
+      ctx.fill();
+    } else if (this.type === 'barracks') {
+      // Draw a simple sword symbol
+      ctx.beginPath();
+      ctx.moveTo(this.x - 10, this.y - 10);
+      ctx.lineTo(this.x + 10, this.y + 10);
+      ctx.moveTo(this.x + 10, this.y - 10);
+      ctx.lineTo(this.x - 10, this.y + 10);
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+
+    // Draw training progress if applicable
+    if (this.isComplete && this.trainingQueue.length > 0) {
+      ctx.fillStyle = 'white';
+      ctx.fillRect(this.x - this.size / 2, this.y + this.size / 2 + 5, this.size, 5);
+      ctx.fillStyle = 'green';
+      ctx.fillRect(this.x - this.size / 2, this.y + this.size / 2 + 5, this.size * (this.trainingProgress / 100), 5);
+    }
+
+    
+  }
+
+  drawFarmCrops(ctx) {
+    const cropColor = '#4CAF50'; // A nice green color for crops
+    const rowSpacing = 12; // Increased spacing between crop rows
+    const lineWidth = 4; // Increased width of crop lines
+
+    ctx.save(); // Save the current context state
+    ctx.strokeStyle = cropColor;
+    ctx.lineWidth = lineWidth;
+
+    // Create a clipping region to contain the crop lines within the farm
+    ctx.beginPath();
+    ctx.rect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
+    ctx.clip();
+
+    // Draw diagonal lines representing crop rows
+    for (let i = -this.size; i < this.size * 2; i += rowSpacing) {
+      ctx.beginPath();
+      ctx.moveTo(this.x - this.size / 2 + i, this.y - this.size / 2);
+      ctx.lineTo(this.x + this.size / 2 + i, this.y + this.size / 2);
+      ctx.stroke();
+    }
+
+    ctx.restore(); // Restore the context state
+  }
+}
+
+class Resource {
+  constructor(x, y, type, amount = 1000) {
+    this.x = x;
+    this.y = y;
+    this.type = type;
+    this.amount = amount;
+    this.size = 20; // Increased size
+  }
+
+  draw(ctx) {
+    // Outer circle (background)
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+    ctx.fillStyle = this.getBackgroundColor();
+    ctx.fill();
+
+    // Inner circle (resource icon)
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size * 0.7, 0, Math.PI * 2);
+    ctx.fillStyle = this.getResourceColor();
+    ctx.fill();
+
+    // Draw resource symbol
+    ctx.fillStyle = 'white';
+    ctx.font = 'bold 14px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(this.getResourceSymbol(), this.x, this.y);
+
+    // Draw resource amount
+    ctx.fillStyle = 'white';
+    ctx.font = '12px Arial';
+    ctx.fillText(this.amount, this.x, this.y + this.size + 15);
+  }
+
+  getBackgroundColor() {
+    switch (this.type) {
+      case 'coin': return '#DAA520'; // GoldenRod
+      case 'food': return '#228B22'; // ForestGreen
+      case 'wood': return '#8B4513'; // SaddleBrown
+      default: return '#808080'; // Gray
+    }
+  }
+
+  getResourceColor() {
+    switch (this.type) {
+      case 'coin': return '#FFD700'; // Gold
+      case 'food': return '#32CD32'; // LimeGreen
+      case 'wood': return '#D2691E'; // Chocolate
+      default: return '#A9A9A9'; // DarkGray
+    }
+  }
+
+  getResourceSymbol() {
+    switch (this.type) {
+      case 'coin': return '$';
+      case 'food': return '🍎';
+      case 'wood': return '🌳';
+      default: return '?';
+    }
+  }
+}
+
+    // Game initialization
+    function initGame() {
+      canvas = document.getElementById('gameCanvas');
+      ctx = canvas.getContext('2d');
+      canvas.width = CANVAS_WIDTH;
+      canvas.height = TOTAL_HEIGHT;
+
+      gameState.isDragging = false;
+      gameState.dragStart = null;
+      gameState.dragEnd = null;
+
+      // Add this to your game state
+      gameState.debug = {
+        lastSelectionAttempt: null,
+        unitsInDragArea: 0
+      };
+
+      gameState.players.push(new Player(0));
+      gameState.players.push(new Player(1, true));
+
+      generateMap();
+      spawnStartingUnits();
+
+      canvas.addEventListener('mousedown', handleMouseDown);
+      // canvas.addEventListener('click', handleLeftClick);
+      canvas.addEventListener('mousemove', handleMouseMove);
+      canvas.addEventListener('mouseup', handleMouseUp);
+      canvas.addEventListener('contextmenu', handleRightClick);
+      window.addEventListener('keydown', handleKeyDown);
+      window.addEventListener('keyup', handleKeyUp);
+
+      canvas.addEventListener('mousedown', handleMinimapMouseDown);
+      canvas.addEventListener('mousemove', handleMinimapMouseMove);
+      canvas.addEventListener('mouseup', handleMinimapMouseUp);
+
+      requestAnimationFrame(gameLoop);
+
+      initUI();
+    }
+
+    function generateMap() {
+      for (let i = 0; i < 200; i++) { // Previously 50
+        gameState.resources.push(new Resource(
+          Math.random() * MAP_SIZE,
+          Math.random() * MAP_SIZE,
+          RESOURCE_TYPES[Math.floor(Math.random() * RESOURCE_TYPES.length)]
+        ));
+      }
+
+      for (let i = 0; i < 200; i++) { // Previously 100
+        gameState.terrain.push({
+          x: Math.random() * MAP_SIZE,
+          y: Math.random() * MAP_SIZE,
+          radius: Math.random() * 20 + 10
+        });
+      }
+    }
+
+    // Update the spawnStartingUnits function
+    function spawnStartingUnits() {
+      const margin = 400; // Increased margin from the map edges
+      const startPositions = [
+        { x: margin, y: margin },
+        { x: MAP_SIZE - margin, y: MAP_SIZE - margin }
+      ];
+
+      gameState.players.forEach((player, index) => {
+        const { x, y } = startPositions[index];
+        const initialTownCenter = new Building(x, y, 'townCenter', player.id);
+        initialTownCenter.isComplete = true;
+        player.buildings.push(initialTownCenter);
+
+        for (let i = 0; i < STARTING_WORKERS; i++) {
+          player.units.push(new Worker(x + Math.random() * 60 - 30, y + Math.random() * 60 - 30, player.id));
+        }
+      });
+    }
+
+let uiElements = [];
+
+function initUI() {
+  console.log('Initializing UI');
+  // Remove any existing listeners
+  canvas.removeEventListener('click', handleUIClick);
+  
+  // Add a single click listener for UI
+  canvas.addEventListener('click', handleUIClick);
+}
+
+let isTraining = false; // Global flag to prevent multiple trainings
+
+function handleUIClick(event) {
+  const rect = canvas.getBoundingClientRect();
+  const clickX = event.clientX - rect.left;
+  const clickY = event.clientY - rect.top;
+
+  console.log('UI Click detected:', clickX, clickY);
+
+  for (let element of uiElements) {
+    if (clickX >= element.x && clickX <= element.x + element.width &&
+        clickY >= element.y && clickY <= element.y + element.height) {
+      console.log('Clicked element:', element);
+      element.onClick();
+      event.stopPropagation(); // Stop event from bubbling
+      break;  // Only trigger the first clicked element
+    }
+  }
+}
+
+
+
+function handleMouseDown(event) {
+  if (event.button === 0) { // Left mouse button
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+
+    if (isInsideMinimap(x, y)) {
+      // Handle minimap interaction
+      handleMinimapMouseDown(event);
+    } else {
+      // Handle unit selection
+      gameState.dragStart = {
+        x: x + gameState.cameraX,
+        y: y + gameState.cameraY
+      };
+      gameState.isDragging = false;
+    }
+  }
+}
+
+
+function handleMouseMove(event) {
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+
+  if (gameState.minimap.isDragging) {
+    // Handle minimap dragging
+    handleMinimapMouseMove(event);
+  } else if (gameState.dragStart) {
+    // Handle unit selection dragging
+    gameState.dragEnd = {
+      x: x + gameState.cameraX,
+      y: y + gameState.cameraY
+    };
+    
+    if (Math.abs(gameState.dragEnd.x - gameState.dragStart.x) > 5 ||
+        Math.abs(gameState.dragEnd.y - gameState.dragStart.y) > 5) {
+      gameState.isDragging = true;
+    }
+  }
+}
+
+function handleMouseUp(event) {
+  if (event.button === 0) { // Left mouse button
+    if (gameState.minimap.isDragging) {
+      // End minimap dragging
+      handleMinimapMouseUp();
+    } else if (gameState.isDragging && gameState.dragStart && gameState.dragEnd) {
+      // Handle drag selection
+      const minX = Math.min(gameState.dragStart.x, gameState.dragEnd.x);
+      const maxX = Math.max(gameState.dragStart.x, gameState.dragEnd.x);
+      const minY = Math.min(gameState.dragStart.y, gameState.dragEnd.y);
+      const maxY = Math.max(gameState.dragStart.y, gameState.dragEnd.y);
+
+      gameState.selectedUnits = gameState.players[0].units.filter(unit =>
+        unit.x >= minX && unit.x <= maxX && unit.y >= minY && unit.y <= maxY
+      );
+
+      // Debug information
+      gameState.debug.lastSelectionAttempt = {
+        dragArea: { minX, maxX, minY, maxY },
+        selectedUnits: gameState.selectedUnits.length
+      };
+      gameState.debug.unitsInDragArea = gameState.selectedUnits.length;
+
+      selectedBuilding = null; // Clear building selection when units are selected
+    } else {
+      // Handle click (selection of single unit or building)
+      handleLeftClick(event);
+    }
+    
+    // Reset drag state
+    gameState.isDragging = false;
+    gameState.dragStart = null;
+    gameState.dragEnd = null;
+  }
+}
+
+
+// Add this function to draw debug information
+function drawDebugInfo() {
+  ctx.fillStyle = 'white';
+  ctx.font = '12px Arial';
+  ctx.fillText(`Total units: ${gameState.players[0].units.length}`, 10, 20);
+  ctx.fillText(`Selected units: ${gameState.selectedUnits.length}`, 10, 40);
+  ctx.fillText(`Is dragging: ${gameState.isDragging}`, 10, 60);
+  
+  if (gameState.debug.lastSelectionAttempt) {
+    const { dragArea, selectedUnits } = gameState.debug.lastSelectionAttempt;
+    ctx.fillText(`Last drag area: (${dragArea.minX.toFixed(0)},${dragArea.minY.toFixed(0)}) to (${dragArea.maxX.toFixed(0)},${dragArea.maxY.toFixed(0)})`, 10, 80);
+    ctx.fillText(`Units in last drag area: ${selectedUnits}`, 10, 100);
+  }
+}
+
+function handleLeftClick(event) {
+  const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left + gameState.cameraX;
+    const y = event.clientY - rect.top + gameState.cameraY;
+
+    // Check if clicked on UI
+    if (event.clientY - rect.top > CANVAS_HEIGHT) {
+        // Let the UI handling system deal with this click
+        return;
+    }
+
+  // Check if clicked on a building
+  selectedBuilding = gameState.players[0].buildings.find(building => 
+    x >= building.x - building.size / 2 &&
+    x <= building.x + building.size / 2 &&
+    y >= building.y - building.size / 2 &&
+    y <= building.y + building.size / 2
+  );
+
+  if (!selectedBuilding) {
+    // If not clicked on a building, select a single unit
+    const clickedUnit = gameState.players[0].units.find(unit => 
+      Math.sqrt((unit.x - x) ** 2 + (unit.y - y) ** 2) < 10
+    );
+    gameState.selectedUnits = clickedUnit ? [clickedUnit] : [];
+  } else {
+    // Clear unit selection when a building is selected
+    gameState.selectedUnits = [];
+  }
+}
+
+// Update handleRightClick function
+function handleRightClick(event) {
+  event.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left + gameState.cameraX;
+  const y = event.clientY - rect.top + gameState.cameraY;
+
+  // Check if clicked on a resource
+  const clickedResource = gameState.resources.find(resource => 
+    Math.sqrt((resource.x - x) ** 2 + (resource.y - y) ** 2) < 10
+  );
+
+  if (clickedResource) {
+    // If clicked on a resource, assign workers to it
+    gameState.selectedUnits.forEach(unit => {
+      if (unit instanceof Worker) {
+        unit.assignResource(clickedResource);
+      }
+    });
+  } else {
+    organizeUnitsInGrid(gameState.selectedUnits, x, y);
+  }
+
+}
+
+
+function handleKeyDown(event) {
+  const key = event.key.toLowerCase();
+  gameState.keys[key] = true;
+
+  // Only process building commands if a worker is selected
+  const selectedWorker = gameState.selectedUnits.find(unit => unit instanceof Worker);
+  // if (!selectedWorker) return;
+
+  const player = gameState.players[0]; // Assuming player is always index 0
+
+  switch(key) {
+    case 't': // Town Center
+      if (canAffordBuilding(player, TOWN_CENTER_COST) && selectedWorker) {
+        deductResources(player, TOWN_CENTER_COST);
+        player.buildings.push(new Building(selectedWorker.x, selectedWorker.y, 'townCenter', player.id));
+        selectedWorker.state = 'idle';
+        console.log('Building Town Center');
+      } else {
+        console.log('Not enough resources to build Town Center');
+      }
+      break;
+
+    case 'b': // Barracks
+      if (canAffordBuilding(player, BARRACKS_COST) && selectedWorker) {
+        deductResources(player, BARRACKS_COST);
+        player.buildings.push(new Building(selectedWorker.x, selectedWorker.y, 'barracks', player.id));
+        selectedWorker.state = 'idle';
+        console.log('Building Barracks');
+      } else {
+        console.log('Not enough resources to build Barracks');
+      }
+      break;
+
+    case 'f': // Farm
+      if (canAffordBuilding(player, FARM_COST) && selectedWorker) {
+        deductResources(player, FARM_COST);
+        player.buildings.push(new Building(selectedWorker.x, selectedWorker.y, 'farm', player.id));
+        selectedWorker.state = 'idle';
+        console.log('Building Farm');
+      } else {
+        console.log('Not enough resources to build Farm');
+      }
+      break;
+    case 'e':
+      if (gameState.selectedUnits.length > 0)
+      {
+        const startX = gameState.selectedUnits[0].x;
+        const startY = gameState.selectedUnits[0].y;
+
+        organizeUnitsInGrid(gameState.selectedUnits, startX, startY, cols = 5)
+      }
+      break;
+  }
+}
+
+
+function organizeUnitsInGrid(units, centerX, centerY, cols = 5) {
+  const totalUnits = units.length;
+  const rows = Math.ceil(totalUnits / cols);
+  const spacing = 15; // Space between units
+
+  const startX = centerX - ((cols - 1) * spacing) / 2;
+  const startY = centerY - ((rows - 1) * spacing) / 2;
+
+  units.forEach((unit, index) => {
+    const col = index % cols;
+    const row = Math.floor(index / cols);
+    const targetX = startX + col * spacing;
+    const targetY = startY + row * spacing;
+    unit.moveToPosition(targetX, targetY);
+  });
+}
+
+// Helper function to check if player can afford a building
+function canAffordBuilding(player, cost) {
+  return Object.entries(cost).every(([resource, amount]) => player.resources[resource] >= amount);
+}
+
+// Helper function to deduct resources when building
+function deductResources(player, cost) {
+  Object.entries(cost).forEach(([resource, amount]) => {
+    player.resources[resource] -= amount;
+  });
+}
+
+
+
+function handleKeyUp(event) {
+  gameState.keys[event.key.toLowerCase()] = false;  // Convert to lowercase
+}
+
+function updateSelectedUnits() {
+  gameState.selectedUnits = gameState.selectedUnits.filter(unit => 
+    unit.health > 0 && gameState.players[0].units.includes(unit)
+  );
+
+  if (selectedBuilding && selectedBuilding.health <= 0) {
+    selectedBuilding = null
+  }
+}
+    
+function updateGame() {
+  updateCamera();
+
+  gameState.players.forEach(player => {
+    player.units = player.units.filter(unit => {
+      unit.update();
+      return unit.health > 0;
+    });
+    player.buildings = player.buildings.filter(building => {
+      building.update();
+      return building.health > 0;
+    });
+  });
+
+  gameState.players.forEach(player => {
+    player.units.forEach(unit => unit.update());
+    player.buildings.forEach(building => building.update());
+  });
+
+  updateSelectedUnits();
+
+  // Update and filter out expired attack effects
+  gameState.attackEffects = gameState.attackEffects.filter(effect => effect.update());
+
+  // Remove depleted resources
+  gameState.resources = gameState.resources.filter(resource => resource.amount > 0);
+
+  if (gameState.players[1].isAI) {
+    updateAI();
+  }
+
+  checkWinCondition();
+}
+
+ 
+function updateCamera() {
+  if (gameState.keys['arrowleft'] || gameState.keys['a']) gameState.cameraX = Math.max(0, gameState.cameraX - CAMERA_SPEED);
+  if (gameState.keys['arrowright'] || gameState.keys['d']) gameState.cameraX = Math.min(MAP_SIZE - CANVAS_WIDTH, gameState.cameraX + CAMERA_SPEED);
+  if (gameState.keys['arrowup'] || gameState.keys['w']) gameState.cameraY = Math.max(0, gameState.cameraY - CAMERA_SPEED);
+  if (gameState.keys['arrowdown'] || gameState.keys['s']) gameState.cameraY = Math.min(MAP_SIZE - CANVAS_HEIGHT, gameState.cameraY + CAMERA_SPEED);
+}
+
+////////// code for AI
+
+
+function updateAI() {
+  const aiPlayer = gameState.players.find(player => player.isAI);
+  if (!aiPlayer) return;
+
+  const aiWorkers = aiPlayer.units.filter(unit => unit instanceof Worker);
+  const aiFarms = aiPlayer.buildings.filter(building => building.type === 'farm');
+  const resources = gameState.resources;
+
+  // Check if we should train more workers
+  const shouldTrainWorker = checkAndTrainWorker(aiPlayer);
+
+  // Check if we should build a new town center
+  const isBuilding = checkAndBuildTownCenter(aiPlayer);
+
+  // Check if we should build a farm
+  if (shouldAIBuildFarm(aiPlayer, aiWorkers, aiFarms)) {
+    buildAIFarm(aiPlayer);
+  }
+
+  // Check if we should build a barracks
+  if (!shouldTrainWorker && !isBuilding && shouldBuildBarracks(aiPlayer)) {
+    const buildLocation = findBarracksBuildLocation(aiPlayer);
+    if (buildLocation) {
+      const worker = aiWorkers.find(w => w.state !== 'building');
+      if (worker) {
+        aiPlayer.resources.wood -= AI_BARRACKS_COST.wood;
+        worker.buildBarracks(buildLocation.x, buildLocation.y);
+        console.log("AI is building a new barracks");
+        return;
+      }
+    }
+  }
+
+  if (shouldTrainWorker || isBuilding) {
+    return;
+  }
+
+   // If not training or building, manage army
+   if (!shouldTrainWorker && !isBuilding) {
+    manageArmyTraining(aiPlayer);
+  }
+
+  // If we're not training a worker or building a town center, proceed with resource assignment
+
+  // Count current worker assignments
+  const workerAssignments = {
+    'coin': 0,
+    'food': 0,
+    'wood': 0,
+    'idle': 0
+  };
+
+  const availableWorkers = aiWorkers.filter(worker => worker.state !== 'building');
+
+  availableWorkers.forEach(worker => {
+    if (worker.targetResource) {
+      workerAssignments[worker.targetResource.type]++;
+    } else {
+      workerAssignments.idle++;
+    }
+  });
+
+  // Calculate desired distribution (adjust these ratios as needed)
+  const desiredRatios = {
+    'coin': 0.3,
+    'food': 0.4,
+    'wood': 0.3
+  };
+
+  const totalWorkers = availableWorkers.length;
+  const desiredAssignments = {
+    'coin': Math.round(totalWorkers * desiredRatios.coin),
+    'food': Math.round(totalWorkers * desiredRatios.food),
+    'wood': Math.round(totalWorkers * desiredRatios.wood)
+  };
+
+  // Reassign workers to balance resource collection
+  RESOURCE_TYPES.forEach(resourceType => {
+    const diff = desiredAssignments[resourceType] - workerAssignments[resourceType];
+    if (diff > 0) {
+      // Need to assign more workers to this resource type
+      const idleWorkers = availableWorkers.filter(w => !w.targetResource || w.state === 'idle');
+      const workersToReassign = idleWorkers.slice(0, diff);
+      workersToReassign.forEach(worker => {
+        const nearestResource = findNearestResourceOfType(worker, resources, resourceType);
+        if (nearestResource) {
+          worker.assignResource(nearestResource);
+        }
+      });
+    } else if (diff < 0) {
+      // Need to unassign some workers from this resource type
+      const excessWorkers = availableWorkers.filter(w => w.targetResource && w.targetResource.type === resourceType)
+                                     .slice(0, -diff);
+      excessWorkers.forEach(worker => {
+        worker.state = 'idle';
+        worker.targetResource = null;
+      });
+    }
+  });
+
+  // Assign any remaining idle workers
+  const remainingIdleWorkers = availableWorkers.filter(w => !w.targetResource || w.state === 'idle');
+  remainingIdleWorkers.forEach(worker => {
+    const nearestResource = findNearestResource(worker, resources);
+    if (nearestResource) {
+      worker.assignResource(nearestResource);
+    }
+  });
+}
+
+function manageArmyTraining(aiPlayer) {
+  const currentWorkers = aiPlayer.units.filter(u => u instanceof Worker).length;
+  const currentSoldiers = aiPlayer.units.filter(u => u instanceof Soldier).length;
+  const idleBarracks = aiPlayer.buildings.filter(b => b.type === 'barracks' && b.isComplete && !b.trainingQueue.length);
+
+  // Calculate excess food
+  const excessFood = aiPlayer.resources.food - FOOD_RESERVE;
+
+  // Prioritize worker training if below desired count
+  if (currentWorkers < DESIRED_WORKER_COUNT && excessFood >= AI_WORKER_COST) {
+    // const townCenter = aiPlayer.buildings.find(b => b.type === 'townCenter' && b.isComplete && !b.trainingQueue.length);
+    // if (townCenter) {
+    //   townCenter.trainingQueue.push('worker');
+    //   aiPlayer.resources.food -= AI_WORKER_COST;
+    //   console.log("AI is training a new worker");
+    return;
+    
+  }
+
+  // Train soldiers if we have excess food and idle barracks
+  if (excessFood >= AI_SOLDIER_COST && idleBarracks.length > 0 && currentSoldiers < AI_MAX_SOLDIERS) {
+    const barracksToTrain = idleBarracks[Math.floor(Math.random() * idleBarracks.length)];
+    barracksToTrain.trainingQueue.push('soldier');
+    aiPlayer.resources.food -= AI_SOLDIER_COST;
+    console.log("AI is training a new soldier");
+  }
+}
+
+function shouldAIBuildFarm(aiPlayer, aiWorkers, aiFarms) {
+  return aiWorkers.length >= AI_WORKER_THRESHOLD_FOR_FARMS &&
+         aiFarms.length < AI_MAX_FARMS &&
+         canAffordBuilding(aiPlayer, FARM_COST) &&
+         gameState.frameCount - gameState.ai.lastFarmBuildTime > AI_FARM_BUILD_INTERVAL;
+}
+
+function buildAIFarm(aiPlayer) {
+  const availableWorker = aiPlayer.units.find(unit => unit instanceof Worker && unit.state !== 'building');
+  if (availableWorker) {
+    const buildLocation = findFarmBuildLocation(aiPlayer);
+    if (buildLocation) {
+      deductResources(aiPlayer, FARM_COST);
+      // aiPlayer.buildings.push(new Building(buildLocation.x, buildLocation.y, 'farm', aiPlayer.id));
+      availableWorker.buildFarm(buildLocation.x, buildLocation.y);
+      gameState.ai.lastFarmBuildTime = gameState.frameCount;
+      console.log("AI is building a new farm");
+    }
+
+    // if (buildLocation) {
+    //   const worker = aiWorkers.find(w => w.state !== 'building');
+    //   if (worker) {
+    //     aiPlayer.resources.wood -= AI_BARRACKS_COST.wood;
+    //     worker.buildBarracks(buildLocation.x, buildLocation.y);
+    //     console.log("AI is building a new barracks");
+    //     return;
+    //   }
+    // }
+  }
+}
+
+function findFarmBuildLocation(aiPlayer) {
+  const townCenters = aiPlayer.buildings.filter(b => b.type === 'townCenter');
+  if (townCenters.length === 0) return null;
+
+  const randomTownCenter = townCenters[Math.floor(Math.random() * townCenters.length)];
+  const angle = Math.random() * 2 * Math.PI;
+  const distance = 200 + Math.random() * 100; // 100-200 units away from town center
+
+  let x = randomTownCenter.x + Math.cos(angle) * distance;
+  let y = randomTownCenter.y + Math.sin(angle) * distance;
+
+ // Clamp coordinates to map boundaries with margin
+ x = Math.max(BUILDING_MARGIN, Math.min(x, MAP_SIZE - BUILDING_MARGIN));
+  y = Math.max(BUILDING_MARGIN, Math.min(y, MAP_SIZE - BUILDING_MARGIN));
+
+  return { x, y };
+}
+
+// Add this function to check if the AI should build a barracks
+function shouldBuildBarracks(aiPlayer) {
+  const currentBarracks = aiPlayer.buildings.filter(b => b.type === 'barracks').length;
+  const currentTownCenters = aiPlayer.buildings.filter(b => b.type === 'townCenter').length;
+  const currentWorkers = aiPlayer.units.filter(u => u instanceof Worker).length;
+  const currentSoldiers = aiPlayer.units.filter(u => u instanceof Soldier).length;
+  
+  const maxAllowedBarracks = currentTownCenters * MAX_BARRACKS_PER_TOWN_CENTER;
+  
+  return (
+    currentBarracks < maxAllowedBarracks &&
+    aiPlayer.resources.wood >= AI_BARRACKS_COST.wood &&
+    (currentBarracks === 0 || currentSoldiers / currentWorkers < DESIRED_RATIO_SOLDIERS_TO_WORKERS)
+  );
+}
+
+// Add this function to find a suitable location for a barracks
+function findBarracksBuildLocation(aiPlayer) {
+  const townCenters = aiPlayer.buildings.filter(b => b.type === 'townCenter');
+  if (townCenters.length === 0) return null;
+
+  const randomTownCenter = townCenters[Math.floor(Math.random() * townCenters.length)];
+  const angle = Math.random() * 2 * Math.PI;
+  const distance = 100 + Math.random() * 100; // 100-200 units away from town center
+
+  let x = randomTownCenter.x + Math.cos(angle) * distance;
+  let y = randomTownCenter.y + Math.sin(angle) * distance;
+
+ // Clamp coordinates to map boundaries with margin
+ x = Math.max(BUILDING_MARGIN, Math.min(x, MAP_SIZE - BUILDING_MARGIN));
+  y = Math.max(BUILDING_MARGIN, Math.min(y, MAP_SIZE - BUILDING_MARGIN));
+
+  return { x, y };
+}
+
+
+
+function findNearestResourceOfType(unit, resources, type) {
+  return findNearestResource(unit, resources.filter(r => r.type === type));
+}
+
+function checkAndBuildTownCenter(aiPlayer) {
+
+  if (aiPlayer.resources.wood >= AI_TOWN_CENTER_COST.wood && 
+      aiPlayer.buildings.filter(b => b.type === 'townCenter').length < MAX_TOWN_CENTERS) {
+    
+    // Select any worker, not just idle ones
+    const suitableWorker = aiPlayer.units.find(u => u instanceof Worker);
+    if (!suitableWorker) return false;
+
+    const buildLocation = findTownCenterBuildLocation(aiPlayer, suitableWorker);
+    if (buildLocation) {
+      aiPlayer.resources.wood -= AI_TOWN_CENTER_COST.wood;
+      suitableWorker.buildTownCenter(buildLocation.x, buildLocation.y);
+      console.log("AI is building a new town center");
+      return true;
+    }
+    console.log("AI can't find a place to build a town center.");
+  }
+  
+  return false;
+}
+
+function findNearestResource(unit, resources) {
+  let nearestResource = null;
+  let shortestDistance = Infinity;
+
+  resources.forEach(resource => {
+    const distance = Math.sqrt(
+      Math.pow(unit.x - resource.x, 2) + Math.pow(unit.y - resource.y, 2)
+    );
+    if (distance < shortestDistance && resource.amount > 0) {
+      shortestDistance = distance;
+      nearestResource = resource;
+    }
+  });
+
+  return nearestResource;
+}
+
+function checkAndTrainWorker(aiPlayer) {
+
+  if (aiPlayer.resources.food >= AI_WORKER_COST && aiPlayer.units.filter(u => u instanceof Worker).length < MAX_WORKERS) {
+    const townCenter = aiPlayer.buildings.find(b => b.type === 'townCenter' && b.isComplete);
+    if (townCenter && !townCenter.trainingQueue.length) {
+      townCenter.trainingQueue.push('worker');
+      aiPlayer.resources.food -= AI_WORKER_COST;
+      console.log("AI is training a new worker");
+      return true;
+    }
+  }
+  return false;
+}
+
+
+
+
+function findTownCenterBuildLocation(aiPlayer, worker) {
+  const existingBuildings = aiPlayer.buildings;
+  const resources = gameState.resources;
+
+  // Find the centroid of all existing buildings
+  const buildingCentroid = existingBuildings.reduce((acc, b) => ({x: acc.x + b.x, y: acc.y + b.y}), {x: 0, y: 0});
+  buildingCentroid.x /= existingBuildings.length;
+  buildingCentroid.y /= existingBuildings.length;
+
+  // Check if the location is suitable
+  const isSuitableLocation = (x, y, requiredResources) => {
+    // Check distance from building centroid
+    if (Math.sqrt((x - buildingCentroid.x)**2 + (y - buildingCentroid.y)**2) > MAX_TOWN_CENTER_DISTANCE) {
+      return false;
+    }
+
+    // Check distance from other town centers
+    const tooClose = existingBuildings.some(b => 
+      b.type === 'townCenter' && Math.sqrt((b.x - x)**2 + (b.y - y)**2) < MIN_DISTANCE_BETWEEN_TOWN_CENTERS
+    );
+    if (tooClose) return false;
+
+     // Check if there are resources nearby
+     const nearbyResources = resources.filter(r => 
+      Math.sqrt((r.x - x)**2 + (r.y - y)**2) < 200
+    );
+    return nearbyResources.length >= requiredResources;
+  };
+
+  // Try to find a suitable location
+  // Try to find a suitable location with decreasing requirements
+  for (let requiredResources = 3; requiredResources > 0; requiredResources--) {
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const angle = Math.random() * 2 * Math.PI;
+      const distance = Math.random() * MAX_TOWN_CENTER_DISTANCE;
+      const testX = buildingCentroid.x + Math.cos(angle) * distance;
+      const testY = buildingCentroid.y + Math.sin(angle) * distance;
+      
+      if (isSuitableLocation(testX, testY, requiredResources)) {
+        console.log(`AI found town center location with ${requiredResources} nearby resources`);
+        return {x: testX, y: testY};
+      }
+    }
+  }
+
+  return null; // No suitable location found
+}
+
+// New function for AI unit organization
+function organizeAIUnitsInGrid(units, position, cols = 5, rows = 2) {
+  if (units.length === 0) return;
+
+  const spacing = 15; // Space between units
+  const startX = position.x - ((cols - 1) * spacing) / 2;
+  const startY = position.y - ((rows - 1) * spacing) / 2;
+
+  units.forEach((unit, index) => {
+    const col = index % cols;
+    const row = Math.floor(index / cols);
+    unit.moveTo(startX + col * spacing, startY + row * spacing);
+  });
+}
+
+function calculateBattalionPosition(aiPlayer, battalionIndex) {
+  const homeBase = findAIHomeBase(aiPlayer);
+  const opponentBase = findOpponentBase(aiPlayer);
+  const defensivePosition = calculateDefensivePosition(homeBase, opponentBase);
+
+  return {
+    x: defensivePosition.x + (battalionIndex % 3) * 100,
+    y: defensivePosition.y + Math.floor(battalionIndex / 3) * 100
+  };
+}
+
+// Update the organizeSoldierBattalions function to use the new AI-specific function
+function organizeSoldierBattalions(aiPlayer) {
+  const soldiers = aiPlayer.units.filter(unit => unit instanceof Soldier);
+  const homeBase = findAIHomeBase(aiPlayer);
+  if (!homeBase) return;
+
+  const opponentBase = findOpponentBase(aiPlayer);
+  const defensivePosition = calculateDefensivePosition(homeBase, opponentBase);
+
+  // Group soldiers into battalions
+  const battalions = [];
+  for (let i = 0; i < soldiers.length; i += AI_BATTALION_SIZE) {
+    battalions.push(soldiers.slice(i, i + AI_BATTALION_SIZE));
+  }
+
+  // Position each battalion
+  battalions.forEach((battalion, index) => {
+    const battalionPosition = {
+      x: defensivePosition.x + (index % 3) * 100, // Spread battalions horizontally
+      y: defensivePosition.y + Math.floor(index / 3) * 100 // And vertically if there are many
+    };
+    organizeAIUnitsInGrid(battalion, battalionPosition, 5, 2); // 5x2 grid for each battalion
+  });
+}
+
+// Update this function to use the new AI-specific organization function
+function onAICreateSoldier(aiPlayer, newSoldier) {
+  // Trigger battalion organization when a new soldier is created
+  const soldiers = aiPlayer.units.filter(unit => unit instanceof Soldier);
+  if (soldiers.length % AI_BATTALION_SIZE === 1) {
+    organizeSoldierBattalions(aiPlayer);
+  } else {
+    // If not forming a new battalion, just position the new soldier
+    const lastBattalion = soldiers.slice(-AI_BATTALION_SIZE);
+    const battalionPosition = calculateBattalionPosition(aiPlayer, Math.floor((soldiers.length - 1) / AI_BATTALION_SIZE));
+    organizeAIUnitsInGrid(lastBattalion, battalionPosition, 5, 2);
+  }
+}
+
+
+function findAIHomeBase(aiPlayer) {
+  return aiPlayer.buildings.find(building => building.type === 'townCenter');
+}
+
+function findOpponentBase(aiPlayer) {
+  const opponentPlayer = gameState.players.find(player => player !== aiPlayer);
+  return opponentPlayer.buildings.find(building => building.type === 'townCenter');
+}
+
+function calculateDefensivePosition(homeBase, opponentBase) {
+  if (!opponentBase) {
+    // If opponent base is not found, just use a position near the home base
+    return {
+      x: homeBase.x + AI_DEFENSIVE_DISTANCE,
+      y: homeBase.y
+    };
+  }
+
+  // Calculate direction towards opponent
+  const dx = opponentBase.x - homeBase.x;
+  const dy = opponentBase.y - homeBase.y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+
+  // Normalize and scale to defensive distance
+  const scale = AI_DEFENSIVE_DISTANCE / distance;
+
+  return {
+    x: homeBase.x + dx * scale,
+    y: homeBase.y + dy * scale
+  };
+}
+
+
+//////////////
+
+
+function checkWinCondition() {
+  const players = gameState.players;
+  
+  for (let i = 0; i < players.length; i++) {
+    const player = players[i];
+    const townCenters = player.buildings.filter(building => building.type === 'townCenter');
+    
+    if (townCenters.length === 0) {
+      // This player has lost
+      const winnerIndex = (i === 0) ? 1 : 0; // If player 0 lost, player 1 wins, and vice versa
+      const winnerName = winnerIndex === 0 ? "Player" : "AI";
+      
+      alert(`${winnerName} wins! All enemy town centers have been destroyed.`);
+      initGame(); // Restart the game
+      return; // Exit the function after declaring a winner
+    }
+  }
+}
+
+    function drawGame() {
+      ctx.fillStyle = '#bcc7b1';
+      ctx.fillRect(0, 0, CANVAS_WIDTH, TOTAL_HEIGHT);
+
+      ctx.save();
+      ctx.translate(-gameState.cameraX, -gameState.cameraY);
+
+      ctx.fillStyle = '#afbda2';
+      gameState.terrain.forEach(terrain => {
+        ctx.beginPath();
+        ctx.arc(terrain.x, terrain.y, terrain.radius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      gameState.resources.forEach(resource => resource.draw(ctx));
+
+      // Draw buildings
+      gameState.players.forEach(player => {
+        player.buildings.forEach(building => building.draw(ctx));
+      });
+
+      // Draw units last so they appear on top
+      gameState.players.forEach(player => {
+        player.units.forEach(unit => unit.draw(ctx));
+      });
+
+      ctx.strokeStyle = '#2ecc71';
+      ctx.lineWidth = 2;
+      gameState.selectedUnits.forEach(unit => {
+        ctx.beginPath();
+        ctx.arc(unit.x, unit.y, 8, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+
+      // Draw attack effects
+      gameState.attackEffects.forEach(effect => effect.draw(ctx));
+
+      // Draw selection rectangle
+      // Draw selection rectangle
+      if (gameState.isDragging && gameState.dragStart && gameState.dragEnd && !gameState.minimap.isDragging) {
+        ctx.strokeStyle = '#2ecc71';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(
+          gameState.dragStart.x,
+          gameState.dragStart.y,
+          gameState.dragEnd.x - gameState.dragStart.x,
+          gameState.dragEnd.y - gameState.dragStart.y
+        );
+      }
+
+
+
+      ctx.restore();
+
+    }
+
+    // Update the drawMinimap function
+function drawMinimap() {
+    const minimapX = 10;
+    const minimapY = CANVAS_HEIGHT + 10;
+
+    // Draw minimap background
+    ctx.fillStyle = '#34495e';
+    ctx.fillRect(minimapX, minimapY, MINIMAP_SIZE, MINIMAP_SIZE);
+
+    ctx.strokeStyle = '#ffffff';
+    ctx.strokeRect(minimapX, minimapY, MINIMAP_SIZE, MINIMAP_SIZE);
+
+    const scale = MINIMAP_SIZE / MAP_SIZE;
+
+    // Draw resources
+    gameState.resources.forEach(resource => {
+        ctx.fillStyle = RESOURCE_COLORS[resource.type];
+        ctx.fillRect(minimapX + resource.x * scale, minimapY + resource.y * scale, 2, 2);
+    });
+
+    // Draw units and buildings
+    gameState.players.forEach(player => {
+        ctx.fillStyle = player.color;
+        player.units.forEach(unit => {
+            ctx.fillRect(minimapX + unit.x * scale, minimapY + unit.y * scale, 2, 2);
+        });
+        player.buildings.forEach(building => {
+            ctx.fillRect(minimapX + building.x * scale, minimapY + building.y * scale, 3, 3);
+        });
+    });
+
+    // Draw camera view rectangle
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(
+        minimapX + gameState.cameraX * scale,
+        minimapY + gameState.cameraY * scale,
+        (CANVAS_WIDTH / MAP_SIZE) * MINIMAP_SIZE,
+        (CANVAS_HEIGHT / MAP_SIZE) * MINIMAP_SIZE
+    );
+}
+
+    let selectedBuilding = null;
+
+// Update the drawUI function
+function drawUI() {
+  ctx.fillStyle = '#2c3e50';
+    ctx.fillRect(0, CANVAS_HEIGHT, CANVAS_WIDTH, UI_HEIGHT);
+
+    // Draw resources
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '16px Arial';
+    let resourceX = MINIMAP_SIZE + 20;  // Start after the minimap
+    RESOURCE_TYPES.forEach((type, index) => {
+        ctx.fillText(`${type}: ${gameState.players[0].resources[type]}`, resourceX, CANVAS_HEIGHT + 30);
+        resourceX += 100;
+    });
+
+
+  // Clear previous UI elements
+  uiElements = [];
+
+  // Draw building-specific UI
+  if (selectedBuilding && selectedBuilding.isComplete) {
+    if (selectedBuilding.type === 'townCenter') {
+      drawButton(resourceX, CANVAS_HEIGHT + 20, 150, 60, 'Train Worker', () => {
+        console.log('Train Worker button clicked');
+        trainUnit(selectedBuilding, 'worker', PLAYER_WORKER_COST);
+      });
+      drawButton(resourceX, CANVAS_HEIGHT + 90, 150, 60, 'Train Scout', () => {
+        console.log('Train Scout button clicked');
+        trainUnit(selectedBuilding, 'scout', PLAYER_SCOUT_COST);
+      });
+    } else if (selectedBuilding.type === 'barracks') {
+      drawButton(resourceX, CANVAS_HEIGHT + 20, 150, 60, 'Train Soldier', () => {
+        console.log('Train Soldier button clicked');
+        trainUnit(selectedBuilding, 'soldier', PLAYER_SOLDIER_COST);
+      });
+    }
+  }
+}
+
+function drawButton(x, y, width, height, text, onClick) {
+  ctx.fillStyle = '#3498db';
+  ctx.fillRect(x, y, width, height);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '14px Arial';
+  ctx.fillText(text, x + 10, y + 25);
+  
+  // Update cost display based on unit type
+  let costText;
+  if (text.includes('Worker')) {
+    costText = `Cost: ${PLAYER_WORKER_COST.food} food`;
+  } else if (text.includes('Soldier')) {
+    costText = `Cost: ${PLAYER_SOLDIER_COST.food} food`;
+  } else if (text.includes('Scout')) {
+    costText = `Cost: ${PLAYER_SCOUT_COST.food} food, ${PLAYER_SCOUT_COST.coin} gold`;
+  } else {
+    costText = 'Cost: N/A';
+  }
+  
+  ctx.fillText(costText, x + 10, y + 45);
+  
+  // Wrap the onClick function to prevent multiple calls
+  const safeOnClick = () => {
+    if (!isTraining) {
+      isTraining = true;
+      onClick();
+      setTimeout(() => { isTraining = false; }, 100); // Reset after 100ms
+    }
+  };
+
+  // Add to UI elements
+  uiElements.push({x, y, width, height, onClick: safeOnClick});
+}
+
+
+
+
+
+
+
+// Update the trainUnit function to handle scouts
+function trainUnit(building, unitType, cost) {
+  console.log(`Attempting to train ${unitType}. Current resources:`, gameState.players[building.playerId].resources);
+  
+  const player = gameState.players[building.playerId];
+  let canTrain = true;
+
+  for (let resource in cost) {
+    if (player.resources[resource] < cost[resource]) {
+      canTrain = false;
+      break;
+    }
+  }
+
+  if (canTrain) {
+    for (let resource in cost) {
+      player.resources[resource] -= cost[resource];
+    }
+    building.trainingQueue.push(unitType);
+    console.log(`Training ${unitType}. Resources left:`, player.resources);
+  } else {
+    console.log("Not enough resources to train unit");
+  }
+}
+
+
+// Add this function to check if a point is inside the minimap
+function isInsideMinimap(x, y) {
+    return x >= 10 && x <= 10 + MINIMAP_SIZE &&
+           y >= CANVAS_HEIGHT + 10 && y <= CANVAS_HEIGHT + 10 + MINIMAP_SIZE;
+}
+
+
+function handleMinimapMouseDown(event) {
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+
+    if (isInsideMinimap(x, y)) {
+        gameState.minimap.isDragging = true;
+        gameState.minimap.lastX = x;
+        gameState.minimap.lastY = y;
+        updateCameraFromMinimap(x, y);
+    }
+}
+
+function handleMinimapMouseMove(event) {
+    if (!gameState.minimap.isDragging) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+
+    if (isInsideMinimap(x, y)) {
+        updateCameraFromMinimap(x, y);
+        gameState.minimap.lastX = x;
+        gameState.minimap.lastY = y;
+    }
+}
+
+function handleMinimapMouseUp() {
+    gameState.minimap.isDragging = false;
+}
+
+function updateCameraFromMinimap(x, y) {
+    const minimapX = x - 10;
+    const minimapY = y - (CANVAS_HEIGHT + 10);
+    const scale = MAP_SIZE / MINIMAP_SIZE;
+
+    gameState.cameraX = Math.min(Math.max(0, minimapX * scale - CANVAS_WIDTH / 2), MAP_SIZE - CANVAS_WIDTH);
+    gameState.cameraY = Math.min(Math.max(0, minimapY * scale - CANVAS_HEIGHT / 2), MAP_SIZE - CANVAS_HEIGHT);
+}
+
+
+    
+    // Don't forget to call drawUI in your main game loop
+function gameLoop() {
+
+  gameState.frameCount++;
+
+  updateGame();
+  drawGame();
+  drawUI();
+  drawMinimap();
+  requestAnimationFrame(gameLoop);
+}
+
+    // Start the game
+    window.onload = initGame;
+    </script>
+</body>
+</html>
