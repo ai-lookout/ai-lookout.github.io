@@ -74,6 +74,7 @@
                 <li>T: Build Town Center</li>
                 <li>B: Build Barracks</li>
                 <li>F: Build Farm</li>
+                <li>Q: Select an idle worker</li>
             </ul>
         </li>
         <li><strong>Camera:</strong> Use arrow keys or WASD to move</li>
@@ -280,12 +281,11 @@
 
 
 
-        // Method for player-initiated moves
-        moveToPosition(x, y) {
+          moveToPosition(x, y) {
             if (this.carryingResource) {
               this.dropResource();
             }
-            this.state = 'idle';
+            this.state = 'movingToLocation';
             this.targetResource = null;
             super.moveTo(x, y);
           }
@@ -310,11 +310,21 @@
             this.moveToTarget(resource.x, resource.y);
           }
 
+          // Add a new method to check if the unit has reached its destination
+          checkDestinationReached() {
+            if (this.state === 'movingToLocation' && this.hasReachedTarget()) {
+              this.state = 'idle';
+            }
+          }
+
           update() {
             super.update();
             
             switch (this.state) {
               case 'idle':
+                break;
+              case 'movingToLocation':
+                this.checkDestinationReached();
                 break;
               case 'movingToResource':
                 if (this.hasReachedTarget() && this.targetResource) {
@@ -1148,7 +1158,25 @@ function handleKeyDown(event) {
         organizeUnitsInGrid(gameState.selectedUnits, startX, startY, cols = 5)
       }
       break;
+    case 'q': // Select idle worker
+      const idleWorker = findIdleWorker();
+      if (idleWorker) {
+        gameState.selectedUnits = [idleWorker];
+        // Center the camera on the selected worker
+        gameState.cameraX = Math.max(0, Math.min(MAP_SIZE - CANVAS_WIDTH, idleWorker.x - CANVAS_WIDTH / 2));
+        gameState.cameraY = Math.max(0, Math.min(MAP_SIZE - CANVAS_HEIGHT, idleWorker.y - CANVAS_HEIGHT / 2));
+        console.log('Idle worker selected');
+      } else {
+        console.log('No idle workers available');
+      }
+      break;
   }
+}
+
+function findIdleWorker() {
+  return gameState.players[0].units.find(unit => 
+    unit instanceof Worker && unit.state === 'idle'
+  );
 }
 
 
